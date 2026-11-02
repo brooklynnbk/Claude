@@ -1,12 +1,10 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BetaContentBlock, BetaMessage } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { runCoachTurn, sanitizeAfterFallback, toChatItems, type CoachEvent } from '../server/coach/coach.ts';
+import { repairTranscript, runCoachTurn, sanitizeAfterFallback, toChatItems, type CoachEvent } from '../server/coach/coach.ts';
 import { SYSTEM_PROMPT } from '../server/coach/prompt.ts';
 import { Store } from '../server/db.ts';
+import { MemoryBackend } from '../server/storage.ts';
 
 type Scripted = Partial<BetaMessage> & { content: BetaContentBlock[] };
 
@@ -45,9 +43,9 @@ const toolUse = (id: string, name: string, input: unknown) => ({ type: 'tool_use
 const text = (t: string) => ({ type: 'text', text: t, citations: null }) as BetaContentBlock;
 
 let store: Store;
-beforeEach(() => {
-  store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'hq-test-')));
-  store.update((d) => {
+beforeEach(async () => {
+  store = new Store(new MemoryBackend());
+  await store.update((d) => {
     d.health.profile = { units: 'lb', goalWeight: 150, startWeight: 180, targetDate: '2027-06-01' };
     d.health.weights = [
       { date: '2026-10-30', weight: 176 },
@@ -163,6 +161,50 @@ describe('runCoachTurn', () => {
     const sent = second.calls[0].messages;
     expect(sent.map((m: any) => m.role)).toEqual(['user', 'system', 'assistant', 'user', 'system']);
     expect(sent.slice(0, 3)).toEqual(first.calls[0].messages.concat([{ role: 'assistant', content: [text('Hi!')] }]));
+  });
+});
+
+describe('repairTranscript', () => {
+  it('drops a trailing message that never got a reply', () => {
+    const msgs: any[] = [
+      { role: 'user', content: 'a' },
+      { role: 'system', content: 'ctx' },
+      { role: 'assistant', content: [text('hi')] },
+      { role: 'user', content: 'b' },
+      { role: 'system', content: 'ctx2' },
+    ];
+    repairTranscript(msgs);
+    expect(msgs.map((m) => m.role)).toEqual(['user', 'system', 'assistant']);
+  });
+
+  it('answers tool calls that were interrupted before running', () => {
+    const msgs: any[] = [
+      { role: 'user', content: 'a' },
+      { role: 'system', content: 'ctx' },
+      { role: 'assistant', content: [toolUse('t9', 'log_weight', { weight: 1 })] },
+    ];
+    repairTranscript(msgs);
+    expect(msgs.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', is_error: true }] });
+  });
+
+  it('leaves a healthy transcript alone', () => {
+    const msgs: any[] = [
+      { role: 'user', content: 'a' },
+      { role: 'system', content: 'ctx' },
+      { role: 'assistant', content: [text('hi')] },
+    ];
+    repairTranscript(msgs);
+    expect(msgs).toHaveLength(3);
+  });
+
+  it('is applied before the next turn', async () => {
+    await store.update((d) => {
+      d.coach.messages.push({ role: 'user', content: 'cut off' }, { role: 'system', content: 'ctx' });
+    });
+    const { client, calls } = fakeClient([{ content: [text('Hello again')] }]);
+    await runCoachTurn(baseTurn(client, [], 'hi'));
+    expect(calls[0].messages.map((m: any) => m.role)).toEqual(['user', 'system']);
+    expect(calls[0].messages[0].content).toBe('hi');
   });
 });
 

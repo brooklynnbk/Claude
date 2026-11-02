@@ -1,15 +1,35 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { CalendarSource } from '../../shared/types.ts';
 import { Icon } from '../components/Icon.tsx';
 import { PageHead } from '../components/PageHead.tsx';
 import { api, del, post } from '../lib/api.ts';
 import { useApi } from '../lib/useApi.ts';
+import { settingsPlace, useAppInfo } from '../lib/appInfo.ts';
 
 const COLORS = ['#1c7ed6', '#e8590c', '#2f9e44', '#ae3ec9', '#f08c00', '#0c8599', '#d6336c'];
 
 export function SettingsPage() {
   const sources = useApi<{ sources: CalendarSource[]; icloud: boolean; icloudUser: string }>('/calendar/sources');
-  const auth = useApi<{ required: boolean; authed: boolean }>('/auth/status');
+  const auth = useAppInfo();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [restoreMsg, setRestoreMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function restore(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setRestoreMsg(null);
+    try {
+      const data = JSON.parse(await file.text());
+      if (!confirm('Replace everything in HQ with this backup? Anything added since the backup was made will be lost.')) return;
+      const r = await post<{ counts: { habits: number; orders: number; weighIns: number; workouts: number } }>('/import', data);
+      const c = r.counts;
+      setRestoreMsg({ ok: true, text: `Restored ${c.habits} habits, ${c.orders} orders, ${c.weighIns} weigh-ins and ${c.workouts} workouts.` });
+      await sources.reload();
+    } catch (err) {
+      setRestoreMsg({ ok: false, text: err instanceof SyntaxError ? "That file isn't a valid backup." : err instanceof Error ? err.message : String(err) });
+    }
+  }
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [color, setColor] = useState(COLORS[0]);
@@ -58,13 +78,9 @@ export function SettingsPage() {
                   Go to <a href="https://account.apple.com" target="_blank" rel="noreferrer">account.apple.com</a> → Sign-In and Security → App-Specific Passwords, and create one called “HQ”.
                 </li>
                 <li>
-                  In the <code>.env</code> file in the HQ folder, add:
-                  <br />
-                  <code>ICLOUD_USERNAME=you@icloud.com</code>
-                  <br />
-                  <code>ICLOUD_APP_PASSWORD=abcd-efgh-ijkl-mnop</code>
+                  Add <code>ICLOUD_USERNAME</code> (your Apple ID email) and <code>ICLOUD_APP_PASSWORD</code> in {settingsPlace(auth?.hosted)}.
                 </li>
-                <li>Restart HQ. All your iCloud calendars show up automatically.</li>
+                <li>All your iCloud calendars show up automatically.</li>
               </ol>
             </details>
           )}
@@ -148,12 +164,19 @@ export function SettingsPage() {
 
       <section className="card stack">
         <h2>Your data</h2>
-        <p className="small text-2">Everything is stored in one file on the computer running HQ. Download a backup any time.</p>
+        <p className="small text-2">
+          {auth?.hosted ? 'Your data is stored privately in your Netlify site.' : 'Everything is stored in one file on the computer running HQ.'} Download a backup any
+          time. Restoring a backup is also how you move HQ between Netlify and your own computer.
+        </p>
         <div className="row wrap">
           <a className="btn" href="/api/export" download>
             Download backup
           </a>
-          {auth.data?.required && (
+          <button className="btn" onClick={() => fileInput.current?.click()}>
+            Restore backup
+          </button>
+          <input ref={fileInput} type="file" accept="application/json,.json" onChange={restore} hidden />
+          {auth?.required && (
             <button
               className="btn ghost"
               onClick={async () => {
@@ -165,6 +188,7 @@ export function SettingsPage() {
             </button>
           )}
         </div>
+        {restoreMsg && <div className={`banner ${restoreMsg.ok ? 'info' : 'bad'}`}>{restoreMsg.text}</div>}
       </section>
     </div>
   );

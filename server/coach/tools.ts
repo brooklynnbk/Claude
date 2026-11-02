@@ -156,7 +156,7 @@ export function describeAction(name: string, input: unknown, units: string): str
   }
 }
 
-export function runTool(name: string, rawInput: unknown, ctx: ToolContext): ToolOutcome {
+export async function runTool(name: string, rawInput: unknown, ctx: ToolContext): Promise<ToolOutcome> {
   if (!(name in inputs)) return { ok: false, error: `Unknown tool ${name}` };
   const parsed = inputs[name as ToolName].safeParse(rawInput);
   if (!parsed.success) {
@@ -177,7 +177,7 @@ export function runTool(name: string, rawInput: unknown, ctx: ToolContext): Tool
     case 'log_weight': {
       const { weight, date = today } = parsed.data as z.infer<typeof inputs.log_weight>;
       if (date > today) return { ok: false, error: 'Cannot log a weigh-in for a future date.' };
-      store.update((d) => {
+      await store.update((d) => {
         d.health.weights = d.health.weights.filter((w) => w.date !== date);
         d.health.weights.push({ date, weight: round1(weight) });
         d.health.weights.sort((a, b) => a.date.localeCompare(b.date));
@@ -190,7 +190,7 @@ export function runTool(name: string, rawInput: unknown, ctx: ToolContext): Tool
       const w = parsed.data as z.infer<typeof inputs.log_workout>;
       const date = w.date ?? today;
       if (date > today) return { ok: false, error: 'Only log workouts that already happened.' };
-      store.update((d) => {
+      await store.update((d) => {
         d.health.workouts.push({ id: newId(), date, activity: w.activity, minutes: w.minutes, notes: w.notes });
         d.health.workouts.sort((a, b) => a.date.localeCompare(b.date));
       });
@@ -202,7 +202,7 @@ export function runTool(name: string, rawInput: unknown, ctx: ToolContext): Tool
         (x) => !x.archived && x.name.trim().toLowerCase() === h.name.trim().toLowerCase(),
       );
       if (exists) return { ok: true, result: `The habit "${exists.name}" is already in their tracker.`, action: `Habit already tracked: ${exists.name}` };
-      store.update((d) => {
+      await store.update((d) => {
         d.habits.habits.push({
           id: newId(),
           name: h.name.trim(),
@@ -216,7 +216,7 @@ export function runTool(name: string, rawInput: unknown, ctx: ToolContext): Tool
     }
     case 'remember': {
       const { note } = parsed.data as z.infer<typeof inputs.remember>;
-      store.update((d) => {
+      await store.update((d) => {
         d.health.notes.push({ id: newId(), text: note.trim(), createdAt: new Date().toISOString() });
       });
       return { ok: true, result: 'Saved to coach notes.', action };
@@ -225,7 +225,7 @@ export function runTool(name: string, rawInput: unknown, ctx: ToolContext): Tool
       const g = parsed.data as Partial<HealthProfile>;
       const changed = Object.entries(g).filter(([, v]) => v !== undefined);
       if (!changed.length) return { ok: false, error: 'No goal fields were provided.' };
-      store.update((d) => {
+      await store.update((d) => {
         d.health.profile = { ...d.health.profile, ...Object.fromEntries(changed) };
       });
       return {

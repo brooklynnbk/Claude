@@ -27,7 +27,11 @@ function readCookie(req: Request, name: string): string | undefined {
   return undefined;
 }
 
+/** Hosted on the internet without a password: refuse to show anything until one is set. */
+const needsSetup = () => config.hosted && !config.appPassword;
+
 export function isAuthed(req: Request): boolean {
+  if (needsSetup()) return false;
   if (!config.appPassword) return true;
   const raw = readCookie(req, COOKIE);
   if (!raw) return false;
@@ -38,6 +42,10 @@ export function isAuthed(req: Request): boolean {
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (needsSetup()) {
+    res.status(503).json({ error: 'Set APP_PASSWORD in your Netlify environment variables, then redeploy.' });
+    return;
+  }
   if (isAuthed(req)) return next();
   res.status(401).json({ error: 'Sign in required' });
 }
@@ -46,10 +54,14 @@ const attempts = new Map<string, { count: number; until: number }>();
 
 export function mountAuthRoutes(api: Router) {
   api.get('/auth/status', (req, res) => {
-    res.json({ required: Boolean(config.appPassword), authed: isAuthed(req) });
+    res.json({ required: Boolean(config.appPassword) || needsSetup(), authed: isAuthed(req), setup: needsSetup(), hosted: config.hosted });
   });
 
   api.post('/auth/login', (req, res) => {
+    if (needsSetup()) {
+      res.status(503).json({ error: 'Set APP_PASSWORD in your Netlify environment variables, then redeploy.' });
+      return;
+    }
     const ip = req.ip ?? 'unknown';
     const a = attempts.get(ip);
     if (a && a.count >= 5 && Date.now() < a.until) {

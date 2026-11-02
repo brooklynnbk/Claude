@@ -1,0 +1,14 @@
+# Netlify hosting for HQ. Set APP_PASSWORD (required), ANTHROPIC_API_KEY and,
+# optionally, ICLOUD_USERNAME / ICLOUD_APP_PASSWORD under
+# Site configuration → Environment variables, then redeploy.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[build.environment]
+  NODE_VERSION = "22"

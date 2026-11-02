@@ -8,6 +8,7 @@ import { WeightChart } from '../components/WeightChart.tsx';
 import { del, post, put } from '../lib/api.ts';
 import { addDays, formatShort, todayISO, userTz } from '../lib/dates.ts';
 import { go } from '../lib/router.ts';
+import { settingsPlace, useAppInfo } from '../lib/appInfo.ts';
 import { useApi, useToday } from '../lib/useApi.ts';
 
 type Tab = 'chat' | 'progress' | 'goals';
@@ -258,18 +259,19 @@ function Chat({ onDataChanged }: { onDataChanged: () => void }) {
 }
 
 function CoachSetup() {
+  const info = useAppInfo();
   return (
     <div className="card stack">
       <h2>Turn on your AI coach</h2>
-      <p className="text-2">The coach runs on Claude. It needs an Anthropic API key, which you add once on the computer running HQ.</p>
+      <p className="text-2">The coach runs on Claude. It needs an Anthropic API key, which you add once.</p>
       <ol className="steps">
         <li>
           Create a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com</a>.
         </li>
         <li>
-          Add it to the <code>.env</code> file in the HQ folder: <code>ANTHROPIC_API_KEY=sk-ant-…</code>
+          Add it as <code>ANTHROPIC_API_KEY</code> in {settingsPlace(info?.hosted)}.
         </li>
-        <li>Restart HQ and reload this page.</li>
+        <li>Reload this page.</li>
       </ol>
       <p className="small muted">Progress and Goals work without the coach.</p>
     </div>

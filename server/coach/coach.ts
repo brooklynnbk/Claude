@@ -42,6 +42,8 @@ export interface TurnOptions {
   now?: Date;
   loadTodayEvents: () => Promise<{ events: CalendarEvent[]; error?: string }>;
   emit: (e: CoachEvent) => void;
+  /** Epoch ms after which no new model call is started (hosted functions have a hard time limit). */
+  stepDeadline?: number;
 }
 
 export class CoachDeclinedError extends Error {}
@@ -59,11 +61,43 @@ export function sanitizeAfterFallback(content: BetaContentBlock[]): BetaContentB
   return content.filter((b, i) => i >= boundary || b.type === 'text');
 }
 
+/**
+ * If an earlier turn was cut off (e.g. the hosting platform stopped the
+ * request), close it out so the transcript is valid again. Only trailing
+ * messages that no thinking block depends on are touched; nothing earlier is edited.
+ */
+export function repairTranscript(messages: BetaMessageParam[]): void {
+  // A user message + context note that never got a reply: drop both.
+  if (messages.at(-1)?.role === 'system') {
+    messages.pop();
+    if (messages.at(-1)?.role === 'user') messages.pop();
+  }
+  // Tool calls that never got results: answer them so the API accepts the history.
+  const last = messages.at(-1);
+  if (last?.role === 'assistant' && Array.isArray(last.content)) {
+    const pending = last.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use');
+    if (pending.length) {
+      messages.push({
+        role: 'user',
+        content: pending.map((t) => ({ type: 'tool_result' as const, tool_use_id: t.id, content: 'Not run: the previous reply was interrupted.', is_error: true })),
+      });
+    }
+  }
+}
+
 export async function runCoachTurn(o: TurnOptions): Promise<void> {
   const { store, emit } = o;
 
+  const needsRepair = (() => {
+    const copy = [...store.data.coach.messages];
+    const len = copy.length;
+    repairTranscript(copy);
+    return copy.length !== len;
+  })();
+  if (needsRepair) await store.update((d) => repairTranscript(d.coach.messages));
+
   if (store.data.coach.messages.length > MAX_HISTORY_MESSAGES) {
-    store.update((d) => {
+    await store.update((d) => {
       d.coach.messages = [];
     });
     emit({ type: 'info', text: 'Started a fresh conversation. Your goals, logs and coach notes carry over.' });
@@ -75,15 +109,20 @@ export async function runCoachTurn(o: TurnOptions): Promise<void> {
   }));
   const snapshot = buildSnapshot(store, o.today, o.tz, o.now ?? new Date(), calendar);
 
-  const startLength = store.data.coach.messages.length;
-  store.update((d) => {
+  const startLength = await store.update((d) => {
+    const len = d.coach.messages.length;
     d.coach.messages.push({ role: 'user', content: o.message }, { role: 'system', content: snapshot });
+    return len;
   });
 
   let answered = false;
   let jsonRetries = 0;
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
+      if (step > 0 && o.stepDeadline && Date.now() > o.stepDeadline) {
+        emit({ type: 'info', text: 'The coach ran out of time on this reply. Send "continue" to pick up where it left off.' });
+        break;
+      }
       emit({ type: 'step' });
       const stream = o.client.beta.messages.stream({
         model: config.coach.model,
@@ -123,30 +162,33 @@ export async function runCoachTurn(o: TurnOptions): Promise<void> {
       }
       if (!content.length) break;
 
-      store.update((d) => {
+      await store.update((d) => {
         d.coach.messages.push({ role: 'assistant', content: content as BetaContentBlockParam[] });
       });
       answered = true;
 
       if (!toolUses.length) break;
 
-      const results: BetaToolResultBlockParam[] = toolUses.map((t) => {
-        const outcome = runTool(t.name, t.input, { store, today: o.today });
+      const results: BetaToolResultBlockParam[] = [];
+      for (const t of toolUses) {
+        const outcome = await runTool(t.name, t.input, { store, today: o.today });
         if (outcome.ok) {
           emit({ type: 'action', text: outcome.action });
-          return { type: 'tool_result', tool_use_id: t.id, content: outcome.result };
+          results.push({ type: 'tool_result', tool_use_id: t.id, content: outcome.result });
+        } else {
+          results.push({ type: 'tool_result', tool_use_id: t.id, content: outcome.error, is_error: true });
         }
-        return { type: 'tool_result', tool_use_id: t.id, content: outcome.error, is_error: true };
-      });
-      store.update((d) => {
+      }
+      await store.update((d) => {
         d.coach.messages.push({ role: 'user', content: results });
       });
     }
   } finally {
     // Nothing came back: drop this turn's user + context messages so history stays clean.
     if (!answered) {
-      store.update((d) => {
-        d.coach.messages.length = startLength;
+      await store.update((d) => {
+        // Only drop this turn's own two messages, in case anything else was appended meanwhile.
+        if (d.coach.messages.length === startLength + 2 && d.coach.messages.at(-1)?.role === 'system') d.coach.messages.length = startLength;
       });
     }
   }

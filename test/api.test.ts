@@ -1,12 +1,10 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../server/app.ts';
 import { config } from '../server/config.ts';
 import { Store } from '../server/db.ts';
+import { MemoryBackend } from '../server/storage.ts';
 
 let server: Server;
 let base: string;
@@ -23,7 +21,7 @@ const call = async (method: string, url: string, body?: unknown) => {
 
 beforeAll(async () => {
   config.appPassword = 'stickers';
-  const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'hq-api-')));
+  const store = new Store(new MemoryBackend());
   server = createApp({ store }).listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
@@ -41,7 +39,7 @@ describe('API', () => {
     const ok = await call('POST', '/auth/login', { password: 'stickers' });
     expect(ok.status).toBe(200);
     cookie = ok.headers.get('set-cookie')!.split(';')[0];
-    expect((await call('GET', '/auth/status')).body).toEqual({ required: true, authed: true });
+    expect((await call('GET', '/auth/status')).body).toEqual({ required: true, authed: true, setup: false, hosted: false });
   });
 
   it('tracks habits', async () => {
@@ -79,6 +77,16 @@ describe('API', () => {
       const res = await call('POST', '/coach/chat', { message: 'hi', today: '2026-11-02', tz: 'America/New_York' });
       expect(res.status).toBe(503);
     }
+  });
+
+  it('restores a backup', async () => {
+    const backup = (await call('GET', '/export')).body;
+    expect(backup.orders).toHaveLength(1);
+    backup.orders.push({ ...backup.orders[0], id: 'copy1', customer: 'Restored Co' });
+    const res = await call('POST', '/import', backup);
+    expect(res.body.counts.orders).toBe(2);
+    expect((await call('GET', '/orders')).body.map((o: any) => o.customer)).toContain('Restored Co');
+    expect((await call('POST', '/import', { hello: 'world' })).status).toBe(400);
   });
 
   it('validates calendar ranges', async () => {

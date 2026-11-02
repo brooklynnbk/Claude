@@ -1,12 +1,17 @@
-// A tiny JSON-file store. This is a single-person app, so one file on disk is
-// plenty: everything is loaded into memory at start-up and written back
-// atomically (write temp file, then rename) after each change.
+// App data store. Everything lives in one JSON document, split into two parts so
+// the (large, growing) coach transcript isn't re-saved on every habit tap:
+//   main  – habits, orders, health, calendar links
+//   coach – the Claude conversation
+//
+// Where the parts are saved is pluggable (see storage.ts): a JSON file on your
+// own computer/server, or Netlify Blobs when hosted on Netlify. Remote backends
+// use compare-and-swap writes; if someone else saved in between, the change is
+// re-applied to the fresh data, so concurrent edits never overwrite each other.
 
-import fs from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import type { CalendarSource, HabitsState, HealthState, Order } from '../shared/types.ts';
+import type { Backend, Part, Seen } from './storage.ts';
 
 export interface Data {
   version: 1;
@@ -29,42 +34,82 @@ export function emptyData(): Data {
   };
 }
 
+/** Fill in any sections missing from older or partial data (e.g. a backup file). */
+export function normalizeData(raw: Partial<Data> | null | undefined): Data {
+  const base = emptyData();
+  const r = raw ?? {};
+  return {
+    version: 1,
+    habits: { ...base.habits, ...r.habits },
+    orders: Array.isArray(r.orders) ? r.orders : [],
+    health: { ...base.health, ...r.health, profile: { ...base.health.profile, ...r.health?.profile } },
+    calendar: { ...base.calendar, ...r.calendar },
+    coach: { ...base.coach, ...r.coach },
+  };
+}
+
+function split(d: Data): Record<Part, unknown> {
+  const { coach, ...main } = d;
+  return { main, coach };
+}
+
+export class ConflictError extends Error {}
+
 export class Store {
-  data: Data;
-  private file: string;
+  data: Data = emptyData();
+  private seen: Record<Part, Seen> = { main: { exists: false }, coach: { exists: false } };
+  private loaded = false;
 
-  constructor(dir: string) {
-    fs.mkdirSync(dir, { recursive: true });
-    this.file = path.join(dir, 'db.json');
-    this.data = this.load();
+  constructor(private backend: Backend) {}
+
+  /** Load the latest saved data. Cheap no-op for the local file backend after the first call. */
+  async refresh(): Promise<void> {
+    if (this.loaded && !this.backend.shared) return;
+    const [main, coach] = await Promise.all([this.backend.read('main'), this.backend.read('coach')]);
+    this.data = normalizeData({ ...(main.value as Partial<Data>), coach: coach.value as Data['coach'] });
+    this.seen = {
+      main: { exists: main.value != null, version: main.version },
+      coach: { exists: coach.value != null, version: coach.version },
+    };
+    this.loaded = true;
   }
 
-  private load(): Data {
-    if (!fs.existsSync(this.file)) return emptyData();
-    const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')) as Partial<Data>;
-    // Merge over defaults so older files pick up new sections.
-    const base = emptyData();
-    return {
-      ...base,
-      ...raw,
-      habits: { ...base.habits, ...raw.habits },
-      health: { ...base.health, ...raw.health, profile: { ...base.health.profile, ...raw.health?.profile } },
-      calendar: { ...base.calendar, ...raw.calendar },
-      coach: { ...base.coach, ...raw.coach },
-    } as Data;
+  /**
+   * Apply a change and save it. `fn` may run more than once if another request
+   * saved first, so it must look things up on the `d` it's given (not on objects
+   * captured beforehand).
+   */
+  async update<T>(fn: (d: Data) => T): Promise<T> {
+    if (!this.loaded) await this.refresh();
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const before = split(this.data);
+      const beforeJson = { main: JSON.stringify(before.main), coach: JSON.stringify(before.coach) };
+      const result = fn(this.data);
+      const after = split(this.data);
+
+      let conflict = false;
+      for (const part of ['main', 'coach'] as Part[]) {
+        if (JSON.stringify(after[part]) === beforeJson[part]) continue;
+        const res = await this.backend.write(part, after[part], this.seen[part]);
+        if (!res.ok) {
+          conflict = true;
+          break;
+        }
+        this.seen[part] = { exists: true, version: res.version };
+      }
+      if (!conflict) return result;
+      // Someone else saved first: reload and re-apply on top of their change.
+      this.loaded = false;
+      await this.refresh();
+    }
+    throw new ConflictError('Too many simultaneous changes. Please try again.');
   }
 
-  save(): void {
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
-    fs.renameSync(tmp, this.file);
-  }
-
-  /** Run a mutation and persist it. */
-  update<T>(fn: (d: Data) => T): T {
-    const result = fn(this.data);
-    this.save();
-    return result;
+  /** Replace everything, e.g. when restoring a backup. */
+  async replaceAll(next: Data): Promise<void> {
+    await this.update((d) => {
+      Object.assign(d, structuredClone(next));
+    });
   }
 }
 

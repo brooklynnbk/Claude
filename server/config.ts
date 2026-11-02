@@ -13,6 +13,8 @@ export const config = {
   port: Number(env.PORT || 3000),
   dataDir: path.resolve(env.DATA_DIR || 'data'),
   production: env.NODE_ENV === 'production',
+  /** True when running as a Netlify Function (set by netlify/functions/api.mts). A password is then required. */
+  hosted: false,
   /** If set, the app asks for this password before showing anything. */
   appPassword: env.APP_PASSWORD || '',
   sessionSecret: env.SESSION_SECRET || '',

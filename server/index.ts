@@ -4,8 +4,10 @@ import express from 'express';
 import { createApp } from './app.ts';
 import { config } from './config.ts';
 import { Store } from './db.ts';
+import { FileBackend } from './storage.ts';
 
-const store = new Store(config.dataDir);
+const store = new Store(new FileBackend(config.dataDir));
+await store.refresh();
 const app = createApp({ store });
 
 // In production the built web app is served from the same server.

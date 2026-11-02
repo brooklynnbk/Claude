@@ -7,7 +7,7 @@ import { loadEvents, normalizeCalendarUrl } from './calendar/sources.ts';
 import { sortEvents } from './calendar/ics.ts';
 import { CoachDeclinedError, runCoachTurn, toChatItems, type CoachEvent } from './coach/coach.ts';
 import { config } from './config.ts';
-import { newId, type Store } from './db.ts';
+import { newId, normalizeData, type Data, type Store } from './db.ts';
 import { addDays, isISODate, isValidTimeZone, zonedRange } from './lib/time.ts';
 
 export interface AppDeps {
@@ -90,21 +90,28 @@ export function createApp({ store, anthropic }: AppDeps) {
   const app = express();
   if (config.trustProxy) app.set('trust proxy', 1);
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '1mb' }));
+  const smallJson = express.json({ limit: '1mb' });
+  const bigJson = express.json({ limit: '25mb' }); // backup restores
+  app.use((req, res, next) => (req.path === '/api/import' ? bigJson : smallJson)(req, res, next));
 
   const api = express.Router();
   mountAuthRoutes(api);
   api.use(requireAuth);
+  // Load the latest saved data (needed when hosted, where many servers share it).
+  api.use(async (_req, _res, next) => {
+    await store.refresh();
+    next();
+  });
 
   // ---------- Habits ----------
-  api.get('/habits', (_req, res) => {
+  api.get('/habits', async (_req, res) => {
     res.json(store.data.habits);
   });
 
-  api.post('/habits', (req, res) => {
+  api.post('/habits', async (req, res) => {
     const h = parse(habitInput.extend({ today: isoDate.optional() }), req.body, res);
     if (!h) return;
-    store.update((d) => {
+    await store.update((d) => {
       d.habits.habits.push({
         id: newId(),
         name: h.name,
@@ -118,12 +125,14 @@ export function createApp({ store, anthropic }: AppDeps) {
     res.json(store.data.habits);
   });
 
-  api.patch('/habits/:id', (req, res) => {
+  api.patch('/habits/:id', async (req, res) => {
     const patch = parse(habitInput.partial().extend({ archived: z.boolean().optional() }), req.body, res);
     if (!patch) return;
-    const habit = store.data.habits.habits.find((h) => h.id === param(req, 'id'));
-    if (!habit) return void res.status(404).json({ error: 'Habit not found' });
-    store.update(() => {
+    const id = param(req, 'id');
+    if (!store.data.habits.habits.some((h) => h.id === id)) return void res.status(404).json({ error: 'Habit not found' });
+    await store.update((d) => {
+      const habit = d.habits.habits.find((h) => h.id === id);
+      if (!habit) return;
       if (patch.name !== undefined) habit.name = patch.name;
       if (patch.emoji !== undefined) habit.emoji = patch.emoji || '✅';
       if (patch.days !== undefined) habit.days = [...new Set(patch.days)].sort();
@@ -132,9 +141,9 @@ export function createApp({ store, anthropic }: AppDeps) {
     res.json(store.data.habits);
   });
 
-  api.delete('/habits/:id', (req, res) => {
+  api.delete('/habits/:id', async (req, res) => {
     const id = param(req, 'id');
-    store.update((d) => {
+    await store.update((d) => {
       d.habits.habits = d.habits.habits.filter((h) => h.id !== id);
       for (const [date, ids] of Object.entries(d.habits.log)) {
         const left = ids.filter((x) => x !== id);
@@ -145,12 +154,12 @@ export function createApp({ store, anthropic }: AppDeps) {
     res.json(store.data.habits);
   });
 
-  api.post('/habits/:id/toggle', (req, res) => {
+  api.post('/habits/:id/toggle', async (req, res) => {
     const body = parse(z.object({ date: isoDate, done: z.boolean().optional() }), req.body, res);
     if (!body) return;
     const id = param(req, 'id');
     if (!store.data.habits.habits.some((h) => h.id === id)) return void res.status(404).json({ error: 'Habit not found' });
-    store.update((d) => {
+    await store.update((d) => {
       const day = new Set(d.habits.log[body.date] ?? []);
       const done = body.done ?? !day.has(id);
       if (done) day.add(id);
@@ -162,11 +171,11 @@ export function createApp({ store, anthropic }: AppDeps) {
   });
 
   // ---------- Orders ----------
-  api.get('/orders', (_req, res) => {
+  api.get('/orders', async (_req, res) => {
     res.json(store.data.orders);
   });
 
-  api.post('/orders', (req, res) => {
+  api.post('/orders', async (req, res) => {
     const o = parse(orderInput, req.body, res);
     if (!o) return;
     const order = {
@@ -175,52 +184,56 @@ export function createApp({ store, anthropic }: AppDeps) {
       createdAt: new Date().toISOString(),
       completedAt: o.status === 'shipped' ? new Date().toISOString() : undefined,
     };
-    store.update((d) => d.orders.push(order));
+    await store.update((d) => d.orders.push(order));
     res.json(order);
   });
 
-  api.patch('/orders/:id', (req, res) => {
+  api.patch('/orders/:id', async (req, res) => {
     const patch = parse(orderInput.partial(), req.body, res);
     if (!patch) return;
-    const order = store.data.orders.find((o) => o.id === param(req, 'id'));
-    if (!order) return void res.status(404).json({ error: 'Order not found' });
-    store.update(() => {
+    const id = param(req, 'id');
+    if (!store.data.orders.some((o) => o.id === id)) return void res.status(404).json({ error: 'Order not found' });
+    const order = await store.update((d) => {
+      const o = d.orders.find((x) => x.id === id);
+      if (!o) return undefined;
       // Only fields present in the request body change; sending a key as null/"" clears optional text.
       for (const key of Object.keys(req.body ?? {}) as (keyof typeof patch)[]) {
-        if (key in patch) Object.assign(order, { [key]: patch[key] });
+        if (key in patch) Object.assign(o, { [key]: patch[key] });
       }
-      if (order.status === 'shipped') order.completedAt ??= new Date().toISOString();
-      else delete order.completedAt;
+      if (o.status === 'shipped') o.completedAt ??= new Date().toISOString();
+      else delete o.completedAt;
+      return o;
     });
+    if (!order) return void res.status(404).json({ error: 'Order not found' });
     res.json(order);
   });
 
-  api.delete('/orders/:id', (req, res) => {
+  api.delete('/orders/:id', async (req, res) => {
     const id = param(req, 'id');
-    store.update((d) => {
+    await store.update((d) => {
       d.orders = d.orders.filter((o) => o.id !== id);
     });
     res.json({ ok: true });
   });
 
   // ---------- Health ----------
-  api.get('/health', (_req, res) => {
+  api.get('/health', async (_req, res) => {
     res.json(store.data.health);
   });
 
-  api.put('/health/profile', (req, res) => {
+  api.put('/health/profile', async (req, res) => {
     const p = parse(profileInput, req.body, res);
     if (!p) return;
-    store.update((d) => {
+    await store.update((d) => {
       d.health.profile = p;
     });
     res.json(store.data.health);
   });
 
-  api.post('/health/weights', (req, res) => {
+  api.post('/health/weights', async (req, res) => {
     const w = parse(z.object({ date: isoDate, weight: z.number().positive().max(1500) }), req.body, res);
     if (!w) return;
-    store.update((d) => {
+    await store.update((d) => {
       d.health.weights = d.health.weights.filter((x) => x.date !== w.date);
       d.health.weights.push({ date: w.date, weight: Math.round(w.weight * 10) / 10 });
       d.health.weights.sort((a, b) => a.date.localeCompare(b.date));
@@ -228,15 +241,15 @@ export function createApp({ store, anthropic }: AppDeps) {
     res.json(store.data.health);
   });
 
-  api.delete('/health/weights/:date', (req, res) => {
+  api.delete('/health/weights/:date', async (req, res) => {
     const date = param(req, 'date');
-    store.update((d) => {
+    await store.update((d) => {
       d.health.weights = d.health.weights.filter((w) => w.date !== date);
     });
     res.json(store.data.health);
   });
 
-  api.post('/health/workouts', (req, res) => {
+  api.post('/health/workouts', async (req, res) => {
     const w = parse(
       z.object({
         date: isoDate,
@@ -248,33 +261,33 @@ export function createApp({ store, anthropic }: AppDeps) {
       res,
     );
     if (!w) return;
-    store.update((d) => {
+    await store.update((d) => {
       d.health.workouts.push({ id: newId(), ...w });
       d.health.workouts.sort((a, b) => a.date.localeCompare(b.date));
     });
     res.json(store.data.health);
   });
 
-  api.delete('/health/workouts/:id', (req, res) => {
+  api.delete('/health/workouts/:id', async (req, res) => {
     const id = param(req, 'id');
-    store.update((d) => {
+    await store.update((d) => {
       d.health.workouts = d.health.workouts.filter((w) => w.id !== id);
     });
     res.json(store.data.health);
   });
 
-  api.post('/health/notes', (req, res) => {
+  api.post('/health/notes', async (req, res) => {
     const n = parse(z.object({ text: z.string().trim().min(1).max(400) }), req.body, res);
     if (!n) return;
-    store.update((d) => {
+    await store.update((d) => {
       d.health.notes.push({ id: newId(), text: n.text, createdAt: new Date().toISOString() });
     });
     res.json(store.data.health);
   });
 
-  api.delete('/health/notes/:id', (req, res) => {
+  api.delete('/health/notes/:id', async (req, res) => {
     const id = param(req, 'id');
-    store.update((d) => {
+    await store.update((d) => {
       d.health.notes = d.health.notes.filter((n) => n.id !== id);
     });
     res.json(store.data.health);
@@ -307,7 +320,7 @@ export function createApp({ store, anthropic }: AppDeps) {
     res.json(body);
   });
 
-  api.get('/calendar/sources', (_req, res) => {
+  api.get('/calendar/sources', async (_req, res) => {
     res.json({ sources: store.data.calendar.sources, icloud: config.caldav.enabled, icloudUser: config.caldav.username });
   });
 
@@ -325,13 +338,13 @@ export function createApp({ store, anthropic }: AppDeps) {
       return void res.status(400).json({ error: `Couldn't load that calendar: ${why}` });
     }
     const source = { id: newId(), ...s };
-    store.update((d) => d.calendar.sources.push(source));
+    await store.update((d) => d.calendar.sources.push(source));
     res.json(source);
   });
 
-  api.delete('/calendar/sources/:id', (req, res) => {
+  api.delete('/calendar/sources/:id', async (req, res) => {
     const id = param(req, 'id');
-    store.update((d) => {
+    await store.update((d) => {
       d.calendar.sources = d.calendar.sources.filter((s) => s.id !== id);
     });
     res.json({ ok: true });
@@ -342,7 +355,7 @@ export function createApp({ store, anthropic }: AppDeps) {
   let coachBusy = false;
   const coachReady = () => Boolean(client) || config.coach.configured;
 
-  api.get('/coach', (_req, res) => {
+  api.get('/coach', async (_req, res) => {
     const body: CoachState = {
       configured: coachReady(),
       messages: toChatItems(store.data.coach.messages, store.data.health.profile.units),
@@ -350,9 +363,9 @@ export function createApp({ store, anthropic }: AppDeps) {
     res.json(body);
   });
 
-  api.post('/coach/reset', (_req, res) => {
+  api.post('/coach/reset', async (_req, res) => {
     if (coachBusy) return void res.status(409).json({ error: 'The coach is still replying' });
-    store.update((d) => {
+    await store.update((d) => {
       d.coach.messages = [];
     });
     res.json({ ok: true });
@@ -370,7 +383,11 @@ export function createApp({ store, anthropic }: AppDeps) {
     );
     if (!body) return;
     if (!coachReady()) {
-      return void res.status(503).json({ error: 'Add ANTHROPIC_API_KEY to your .env file to turn on the coach.' });
+      return void res.status(503).json({
+        error: config.hosted
+          ? 'Add ANTHROPIC_API_KEY in your Netlify environment variables to turn on the coach.'
+          : 'Add ANTHROPIC_API_KEY to your .env file to turn on the coach.',
+      });
     }
     if (coachBusy) return void res.status(409).json({ error: 'The coach is still replying' });
     client ??= new Anthropic();
@@ -391,6 +408,8 @@ export function createApp({ store, anthropic }: AppDeps) {
         message: body.message,
         today: body.today,
         tz: body.tz,
+        // Hosted functions are stopped after 60 s; don't start a new step past this.
+        stepDeadline: config.hosted ? Date.now() + 40_000 : undefined,
         emit: (e: CoachEvent) => send(e.type, e),
         loadTodayEvents: async () => {
           const r = await Promise.race([
@@ -410,9 +429,26 @@ export function createApp({ store, anthropic }: AppDeps) {
   });
 
   // ---------- Export ----------
-  api.get('/export', (_req, res) => {
+  api.get('/export', async (_req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="hq-backup-${new Date().toISOString().slice(0, 10)}.json"`);
     res.json(store.data);
+  });
+
+  api.post('/import', async (req, res) => {
+    const raw = req.body as Partial<Data> | undefined;
+    const looksRight = raw && typeof raw === 'object' && ('habits' in raw || 'orders' in raw || 'health' in raw);
+    if (!looksRight) return void res.status(400).json({ error: "That file doesn't look like an HQ backup." });
+    const next = normalizeData(raw);
+    await store.replaceAll(next);
+    res.json({
+      ok: true,
+      counts: {
+        habits: next.habits.habits.length,
+        orders: next.orders.length,
+        weighIns: next.health.weights.length,
+        workouts: next.health.workouts.length,
+      },
+    });
   });
 
   app.use('/api', api);
@@ -424,7 +460,7 @@ export function createApp({ store, anthropic }: AppDeps) {
 
 function coachErrorMessage(err: unknown): string {
   if (err instanceof CoachDeclinedError) return err.message;
-  if (err instanceof Anthropic.AuthenticationError) return 'The Anthropic API key was rejected. Check ANTHROPIC_API_KEY in your .env file.';
+  if (err instanceof Anthropic.AuthenticationError) return 'The Anthropic API key was rejected. Check ANTHROPIC_API_KEY.';
   if (err instanceof Anthropic.RateLimitError) return 'The coach is rate-limited right now. Try again in a minute.';
   if (err instanceof Anthropic.APIConnectionError) return "Couldn't reach the Claude API. Check your internet connection.";
   if (err instanceof Anthropic.APIError) return `Claude API error (${err.status ?? 'unknown'}): ${err.message}`;

@@ -8,9 +8,23 @@ One place for your day:
 - **Orders**: the weekly queue for the sticker business. Each order has a customer, channel (Etsy, wholesale…), designs × quantity, due date, total, and status (To do → Printing → Packed → Shipped). It also shows overdue orders and weekly totals.
 - **Health coach**: an AI coach (Claude) that knows your goals, weigh-ins, workouts, habits, and calendar. Tell it "weighed 172.4 today" or "did 30 min of yoga" and it logs it. Ask it to plan workouts around your week, and it can add habits to your tracker. There's also a progress chart and a goals page.
 
-It's a web app you run on your own computer. Add it to your iPhone home screen and it behaves like an app. All data stays in one file (`data/db.json`) on that computer.
+It's a web app. Host it on **Netlify** (works anywhere, nothing to keep running) or run it on **your own computer or home server**. Either way, add it to your iPhone home screen and it behaves like an app. You can move between the two at any time with a backup file.
 
-## Quick start
+## Hosting on Netlify
+
+1. Create a site from this repository (or deploy with the Netlify CLI). `netlify.toml` already has the build settings.
+2. Under **Site configuration → Environment variables**, add:
+   - `APP_PASSWORD`: required. Until it's set, HQ shows a setup screen and no data.
+   - `ANTHROPIC_API_KEY`: for the health coach.
+   - `ICLOUD_USERNAME` and `ICLOUD_APP_PASSWORD`: optional, for Apple Calendar (see below).
+3. **Deploys → Trigger deploy** so the new variables take effect.
+4. Open the site on your iPhone in Safari → Share → **Add to Home Screen**.
+
+On Netlify, data is kept in the site's private Netlify Blobs store (`hq`). Saves use version checks, so two changes made at the same moment, such as a habit tap while the coach is logging a workout, never overwrite each other.
+
+## Running on your own computer or server
+
+You need [Node.js](https://nodejs.org) 20 or newer.
 
 You need [Node.js](https://nodejs.org) 20 or newer.
 
@@ -42,14 +56,16 @@ There are two ways. Use either one or both.
 
 Calendars refresh every 5 minutes. The refresh button on the Calendar page pulls changes immediately.
 
-### Use it on your phone
+### Use it on your phone (self-hosted)
 
 - **At home:** run HQ on your Mac, then open `http://<your-mac's-name>.local:3000` on your iPhone over the same Wi-Fi. In Safari, tap Share → **Add to Home Screen**.
-- **Anywhere:** put it behind an HTTPS tunnel such as Tailscale or Cloudflare Tunnel, or host it on a small server with a persistent disk. Set `APP_PASSWORD` in `.env` first so only you can open it, and set `TRUST_PROXY=1` when it's behind a proxy.
+- **Anywhere:** install Tailscale on the server and your phone (free), or use Cloudflare Tunnel. Don't open ports on your router. Set `APP_PASSWORD` in `.env` first so only you can open it, and set `TRUST_PROXY=1` when it's behind a proxy.
 
-## Backups
+## Backups and moving
 
-Settings → **Download backup** saves everything as one JSON file. You can also copy `data/db.json`.
+Settings → **Download backup** saves everything (habits, orders, weigh-ins, workouts, goals, coach notes and conversation) as one JSON file. Settings → **Restore backup** loads one back in.
+
+To move HQ between Netlify and your own computer or server: download a backup from the old one, set up the new one, then restore the backup there. When running on your own machine, the data file is `data/db.json`, in the same format as a backup.
 
 ## Development
 
@@ -66,9 +82,10 @@ How it's put together:
 | `server/app.ts` | REST API (habits, orders, health, calendar, coach) |
 | `server/calendar/` | `.ics` parsing and recurrence expansion (`ical.js`), iCloud CalDAV (`tsdav`) |
 | `server/coach/` | Claude coach: system prompt, per-message context, tools, streaming loop |
-| `server/db.ts` | JSON file store |
+| `server/db.ts`, `server/storage.ts` | Data store; saves to a local file or to Netlify Blobs, with compare-and-swap writes |
+| `server/netlify.ts`, `netlify/functions/api.mts` | Runs the same API as a Netlify Function |
 | `shared/` | Types plus habit/weight math used by both sides |
 | `src/` | React app (pages in `src/pages`) |
-| `test/` | Vitest tests, including an Apple-style `.ics` fixture with DST, EXDATE, and moved/cancelled repeats |
+| `test/` | Vitest tests: an Apple-style `.ics` fixture with DST, EXDATE, and moved/cancelled repeats; the coach loop; concurrent saves; the Netlify adapter |
 
 How the coach talks to Claude: the system prompt and tool list are fixed for the whole conversation. Each of your messages is followed by a fresh "context note" (your goals, weight trend, habits, today's calendar, order workload), which is appended as a mid-conversation system message. Earlier messages are never edited, so prompt caching keeps working and long chats stay cheap. When a chat gets very long, it starts fresh automatically. Your goals, logs, and the coach's saved notes carry over.

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Icon, type IconName } from './components/Icon.tsx';
-import { api, onUnauthorized, post } from './lib/api.ts';
+import { onUnauthorized, post } from './lib/api.ts';
+import { getStatus } from './lib/appInfo.ts';
 import type { Route } from './lib/router.ts';
 import { CalendarPage } from './pages/Calendar.tsx';
 import { CoachPage } from './pages/Coach.tsx';
@@ -24,12 +25,12 @@ function readRoute(): { route: Route; arg?: string } {
 }
 
 export function App() {
-  const [auth, setAuth] = useState<'checking' | 'login' | 'ok'>('checking');
+  const [auth, setAuth] = useState<'checking' | 'login' | 'setup' | 'ok'>('checking');
   const [{ route, arg }, setRoute] = useState(readRoute);
 
   useEffect(() => {
-    api<{ required: boolean; authed: boolean }>('/auth/status')
-      .then((s) => setAuth(s.authed ? 'ok' : 'login'))
+    getStatus()
+      .then((s) => setAuth(s.setup ? 'setup' : s.authed ? 'ok' : 'login'))
       .catch(() => setAuth('ok'));
     const off = onUnauthorized(() => setAuth('login'));
     const onHash = () => {
@@ -44,7 +45,16 @@ export function App() {
   }, []);
 
   if (auth === 'checking') return null;
-  if (auth === 'login') return <Login onDone={() => setAuth('ok')} />;
+  if (auth === 'setup') return <SetupNeeded />;
+  if (auth === 'login')
+    return (
+      <Login
+        onDone={() => {
+          void getStatus(true);
+          setAuth('ok');
+        }}
+      />
+    );
 
   return (
     <div className="shell">
@@ -65,6 +75,24 @@ export function App() {
         {route === 'coach' && <CoachPage tab={arg} />}
         {route === 'settings' && <SettingsPage />}
       </main>
+    </div>
+  );
+}
+
+function SetupNeeded() {
+  return (
+    <div className="login">
+      <div className="card stack">
+        <h1>Almost there</h1>
+        <p className="text-2">HQ is online, so it needs a password before it will show your data.</p>
+        <ol className="steps">
+          <li>In Netlify, open this site → Site configuration → Environment variables.</li>
+          <li>
+            Add <code>APP_PASSWORD</code> with a password only you know (and <code>ANTHROPIC_API_KEY</code> for the coach).
+          </li>
+          <li>Go to Deploys → Trigger deploy, then reload this page.</li>
+        </ol>
+      </div>
     </div>
   );
 }
