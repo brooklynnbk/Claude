@@ -24,6 +24,8 @@
   --radius: 14px;
   --radius-sm: 9px;
   --nav-h: 64px;
+  /* Space reserved for overlays from other services (see src/lib/overlays.ts). */
+  --overlay-clearance: 0px;
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -129,7 +131,7 @@ p {
 .main {
   max-width: 760px;
   margin: 0 auto;
-  padding: calc(env(safe-area-inset-top) + 20px) 16px calc(var(--nav-h) + env(safe-area-inset-bottom) + 28px);
+  padding: calc(env(safe-area-inset-top) + 20px) 16px calc(var(--nav-h) + env(safe-area-inset-bottom) + var(--overlay-clearance) + 28px);
 }
 .page-head {
   display: flex;
@@ -199,7 +201,7 @@ p {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-top: 1px solid var(--border);
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: calc(env(safe-area-inset-bottom) + var(--overlay-clearance));
 }
 .nav a {
   flex: 1;
@@ -263,7 +265,7 @@ p {
   }
   .main {
     margin-left: max(220px, calc((100vw - 760px) / 2));
-    padding-bottom: 48px;
+    padding-bottom: calc(48px + var(--overlay-clearance));
   }
 }
 
@@ -1008,7 +1010,7 @@ textarea:focus,
 }
 .composer {
   position: sticky;
-  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 8px);
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + var(--overlay-clearance) + 8px);
   display: flex;
   gap: 8px;
   align-items: flex-end;
@@ -1020,7 +1022,7 @@ textarea:focus,
 }
 @media (min-width: 960px) {
   .composer {
-    bottom: 16px;
+    bottom: calc(16px + var(--overlay-clearance));
   }
 }
 .composer textarea {
