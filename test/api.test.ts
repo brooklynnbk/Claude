@@ -52,6 +52,23 @@ describe('API', () => {
     expect((await call('POST', `/habits/${id}/toggle`, { date: 'nope' })).status).toBe(400);
   });
 
+  it('keeps a to-do list', async () => {
+    let list = (await call('POST', '/todos', { title: 'Order more vinyl', dueDate: '2026-11-03' })).body;
+    list = (await call('POST', '/todos', { title: 'Call the printer' })).body;
+    expect(list.map((t: any) => t.title)).toEqual(['Order more vinyl', 'Call the printer']);
+    const vinyl = list[0];
+    list = (await call('PATCH', `/todos/${vinyl.id}`, { done: true })).body;
+    expect(list.at(-1)).toMatchObject({ title: 'Order more vinyl', done: true });
+    expect(list.at(-1).doneAt).toBeTruthy();
+    list = (await call('PATCH', `/todos/${list[0].id}`, { starred: true, dueDate: '2026-11-04' })).body;
+    expect(list[0]).toMatchObject({ title: 'Call the printer', starred: true, dueDate: '2026-11-04' });
+    list = (await call('PATCH', `/todos/${list[0].id}`, { dueDate: null })).body;
+    expect(list[0].dueDate).toBeUndefined();
+    list = (await call('POST', '/todos/clear-completed')).body;
+    expect(list.map((t: any) => t.title)).toEqual(['Call the printer']);
+    expect((await call('POST', '/todos', { title: '   ' })).status).toBe(400);
+  });
+
   it('manages sticker orders', async () => {
     const order = await call('POST', '/orders', {
       customer: 'Maya (Etsy)',

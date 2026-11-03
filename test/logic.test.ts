@@ -69,3 +69,38 @@ describe('weekStart', () => {
     expect(weekStart('2026-11-04')).toBe('2026-11-02');
   });
 });
+
+describe('to-do grouping', async () => {
+  const { groupTodos, dueNow } = await import('../shared/todos.ts');
+  const t = (id: string, over: Partial<import('../shared/types.ts').Todo> = {}) => ({
+    id,
+    title: id,
+    starred: false,
+    done: false,
+    createdAt: `2026-11-01T00:00:0${id.length}Z`,
+    ...over,
+  });
+  const list = [
+    t('someday'),
+    t('late', { dueDate: '2026-10-30' }),
+    t('today-b', { dueDate: '2026-11-02' }),
+    t('today-star', { dueDate: '2026-11-02', starred: true }),
+    t('next-week', { dueDate: '2026-11-09' }),
+    t('finished', { dueDate: '2026-11-02', done: true, doneAt: '2026-11-02T10:00:00Z' }),
+  ];
+
+  it('groups into overdue, today, upcoming and someday with starred first', () => {
+    const { groups, done } = groupTodos(list, '2026-11-02');
+    expect(groups.map((g) => [g.key, g.items.map((x) => x.id)])).toEqual([
+      ['overdue', ['late']],
+      ['today', ['today-star', 'today-b']],
+      ['upcoming', ['next-week']],
+      ['someday', ['someday']],
+    ]);
+    expect(done.map((x) => x.id)).toEqual(['finished']);
+  });
+
+  it('shows overdue and today on the Today screen', () => {
+    expect(dueNow(list, '2026-11-02').map((x) => x.id)).toEqual(['late', 'today-star', 'today-b']);
+  });
+});

@@ -1,6 +1,6 @@
 // App data store. Everything lives in one JSON document, split into two parts so
 // the (large, growing) coach transcript isn't re-saved on every habit tap:
-//   main  – habits, orders, health, calendar links
+//   main  – habits, to-dos, orders, health, calendar links
 //   coach – the Claude conversation
 //
 // Where the parts are saved is pluggable (see storage.ts): a JSON file on your
@@ -10,12 +10,13 @@
 
 import { randomUUID } from 'node:crypto';
 import type { BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages';
-import type { CalendarSource, HabitsState, HealthState, Order } from '../shared/types.ts';
+import type { CalendarSource, HabitsState, HealthState, Order, Todo } from '../shared/types.ts';
 import type { Backend, Part, Seen } from './storage.ts';
 
 export interface Data {
   version: 1;
   habits: HabitsState;
+  todos: Todo[];
   orders: Order[];
   health: HealthState;
   calendar: { sources: CalendarSource[] };
@@ -27,6 +28,7 @@ export function emptyData(): Data {
   return {
     version: 1,
     habits: { habits: [], log: {} },
+    todos: [],
     orders: [],
     health: { profile: { units: 'lb' }, weights: [], workouts: [], notes: [] },
     calendar: { sources: [] },
@@ -41,6 +43,7 @@ export function normalizeData(raw: Partial<Data> | null | undefined): Data {
   return {
     version: 1,
     habits: { ...base.habits, ...r.habits },
+    todos: Array.isArray(r.todos) ? r.todos : [],
     orders: Array.isArray(r.orders) ? r.orders : [],
     health: { ...base.health, ...r.health, profile: { ...base.health.profile, ...r.health?.profile } },
     calendar: { ...base.calendar, ...r.calendar },

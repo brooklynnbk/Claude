@@ -11,6 +11,8 @@ import { AllDay, ConnectCalendar, EventRow, eventsByDay, useEvents } from './Cal
 import { askCoach } from './Coach.tsx';
 import { HabitCheck, useHabits } from './Habits.tsx';
 import { OrderCard, stickerCount, useOrders } from './Orders.tsx';
+import { QuickAdd, TodoRow, useTodos } from './Todos.tsx';
+import { dueNow } from '../../shared/todos.ts';
 
 export function TodayPage() {
   const today = useToday(todayISO);
@@ -21,6 +23,7 @@ export function TodayPage() {
     <div className="stack">
       <PageHead title={`${greeting()}${name ? `, ${name}` : ''}`} sub={formatLong(today)} />
       <Schedule today={today} />
+      <TodayTodos today={today} />
       <TodayHabits today={today} />
       <WeekOrders today={today} />
       {health.data && <HealthCard health={health.data} setHealth={health.setData} today={today} />}
@@ -63,6 +66,36 @@ function Schedule({ today }: { today: string }) {
           {timed.length > 0 && !upcoming.length && <div className="small muted">That's everything for today.</div>}
         </>
       )}
+    </section>
+  );
+}
+
+function TodayTodos({ today }: { today: string }) {
+  const todos = useTodos();
+  if (!todos.data) return todos.error ? <div className="banner bad">{todos.error}</div> : null;
+  const list = dueNow(todos.data, today);
+  const open = todos.data.filter((t) => !t.done).length;
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>
+          To-do{' '}
+          {list.length > 0 && (
+            <span className="muted small" style={{ fontWeight: 500 }}>
+              {list.length} due
+            </span>
+          )}
+        </h2>
+        <a href="#/todos">All to-dos{open > list.length ? ` (${open})` : ''}</a>
+      </div>
+      {!list.length && <div className="empty">Nothing due today.</div>}
+      {list.map((t) => (
+        <TodoRow key={t.id} t={t} todos={todos} today={today} showDue={t.dueDate !== today} />
+      ))}
+      <div style={{ marginTop: 10 }}>
+        <QuickAdd todos={todos} today={today} defaultDue={today} compact />
+      </div>
     </section>
   );
 }

@@ -9,9 +9,11 @@ import { HabitsPage } from './pages/Habits.tsx';
 import { OrdersPage } from './pages/Orders.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { TodayPage } from './pages/Today.tsx';
+import { TodosPage } from './pages/Todos.tsx';
 
 const NAV: { route: Route; label: string; icon: IconName }[] = [
   { route: 'today', label: 'Today', icon: 'today' },
+  { route: 'todos', label: 'To-do', icon: 'todo' },
   { route: 'calendar', label: 'Calendar', icon: 'calendar' },
   { route: 'habits', label: 'Habits', icon: 'habits' },
   { route: 'orders', label: 'Orders', icon: 'orders' },
@@ -20,7 +22,7 @@ const NAV: { route: Route; label: string; icon: IconName }[] = [
 
 function readRoute(): { route: Route; arg?: string } {
   const [route, arg] = location.hash.replace(/^#\/?/, '').split('/');
-  const known: Route[] = ['today', 'calendar', 'habits', 'orders', 'coach', 'settings'];
+  const known: Route[] = ['today', 'todos', 'calendar', 'habits', 'orders', 'coach', 'settings'];
   return { route: known.includes(route as Route) ? (route as Route) : 'today', arg: arg ? decodeURIComponent(arg) : undefined };
 }
 
@@ -69,6 +71,7 @@ export function App() {
       </nav>
       <main className="main">
         {route === 'today' && <TodayPage />}
+        {route === 'todos' && <TodosPage />}
         {route === 'calendar' && <CalendarPage />}
         {route === 'habits' && <HabitsPage />}
         {route === 'orders' && <OrdersPage />}

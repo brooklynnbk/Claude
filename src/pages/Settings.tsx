@@ -22,9 +22,9 @@ export function SettingsPage() {
     try {
       const data = JSON.parse(await file.text());
       if (!confirm('Replace everything in HQ with this backup? Anything added since the backup was made will be lost.')) return;
-      const r = await post<{ counts: { habits: number; orders: number; weighIns: number; workouts: number } }>('/import', data);
+      const r = await post<{ counts: { habits: number; todos: number; orders: number; weighIns: number; workouts: number } }>('/import', data);
       const c = r.counts;
-      setRestoreMsg({ ok: true, text: `Restored ${c.habits} habits, ${c.orders} orders, ${c.weighIns} weigh-ins and ${c.workouts} workouts.` });
+      setRestoreMsg({ ok: true, text: `Restored ${c.habits} habits, ${c.todos} to-dos, ${c.orders} orders, ${c.weighIns} weigh-ins and ${c.workouts} workouts.` });
       await sources.reload();
     } catch (err) {
       setRestoreMsg({ ok: false, text: err instanceof SyntaxError ? "That file isn't a valid backup." : err instanceof Error ? err.message : String(err) });

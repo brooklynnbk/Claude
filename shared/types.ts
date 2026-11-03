@@ -21,6 +21,21 @@ export interface HabitsState {
   log: Record<ISODate, string[]>;
 }
 
+// ---------- To-dos ----------
+
+export interface Todo {
+  id: string;
+  title: string;
+  notes?: string;
+  /** Optional due date. No date = "Someday". */
+  dueDate?: ISODate;
+  /** Important tasks float to the top of their group. */
+  starred: boolean;
+  done: boolean;
+  doneAt?: string;
+  createdAt: string;
+}
+
 // ---------- Sticker orders ----------
 
 export const ORDER_STATUSES = ['todo', 'making', 'packed', 'shipped'] as const;

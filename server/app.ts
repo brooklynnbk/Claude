@@ -2,6 +2,7 @@ import express, { type Request, type Response } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { ORDER_STATUSES, type CalendarResponse, type CoachState } from '../shared/types.ts';
+import { compareTodos } from '../shared/todos.ts';
 import { mountAuthRoutes, requireAuth } from './auth.ts';
 import { loadEvents, normalizeCalendarUrl } from './calendar/sources.ts';
 import { sortEvents } from './calendar/ics.ts';
@@ -28,6 +29,14 @@ const habitInput = z.object({
   name: z.string().trim().min(1).max(80),
   emoji: z.string().trim().max(8).optional(),
   days: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+});
+
+const todoInput = z.object({
+  title: z.string().trim().min(1).max(200),
+  notes: optText(2000),
+  // null clears the due date when editing
+  dueDate: isoDate.nullish().transform((v) => v ?? undefined),
+  starred: z.boolean().optional(),
 });
 
 const orderInput = z.object({
@@ -168,6 +177,54 @@ export function createApp({ store, anthropic }: AppDeps) {
       else delete d.habits.log[body.date];
     });
     res.json(store.data.habits);
+  });
+
+  // ---------- To-dos ----------
+  const todoList = () => [...store.data.todos].sort((a, b) => Number(a.done) - Number(b.done) || compareTodos(a, b));
+
+  api.get('/todos', async (_req, res) => {
+    res.json(todoList());
+  });
+
+  api.post('/todos', async (req, res) => {
+    const t = parse(todoInput, req.body, res);
+    if (!t) return;
+    const todo = { id: newId(), title: t.title, notes: t.notes, dueDate: t.dueDate, starred: t.starred ?? false, done: false, createdAt: new Date().toISOString() };
+    await store.update((d) => d.todos.push(todo));
+    res.json(todoList());
+  });
+
+  api.patch('/todos/:id', async (req, res) => {
+    const patch = parse(todoInput.partial().extend({ done: z.boolean().optional() }), req.body, res);
+    if (!patch) return;
+    const id = param(req, 'id');
+    if (!store.data.todos.some((t) => t.id === id)) return void res.status(404).json({ error: 'To-do not found' });
+    await store.update((d) => {
+      const t = d.todos.find((x) => x.id === id);
+      if (!t) return;
+      // Only fields present in the request change; null/"" clears due date or notes.
+      for (const key of Object.keys(req.body ?? {}) as (keyof typeof patch)[]) {
+        if (key in patch) Object.assign(t, { [key]: patch[key] });
+      }
+      if (t.done) t.doneAt ??= new Date().toISOString();
+      else delete t.doneAt;
+    });
+    res.json(todoList());
+  });
+
+  api.delete('/todos/:id', async (req, res) => {
+    const id = param(req, 'id');
+    await store.update((d) => {
+      d.todos = d.todos.filter((t) => t.id !== id);
+    });
+    res.json(todoList());
+  });
+
+  api.post('/todos/clear-completed', async (_req, res) => {
+    await store.update((d) => {
+      d.todos = d.todos.filter((t) => !t.done);
+    });
+    res.json(todoList());
   });
 
   // ---------- Orders ----------
@@ -444,6 +501,7 @@ export function createApp({ store, anthropic }: AppDeps) {
       ok: true,
       counts: {
         habits: next.habits.habits.length,
+        todos: next.todos.length,
         orders: next.orders.length,
         weighIns: next.health.weights.length,
         workouts: next.health.workouts.length,
