@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Store } from '../server/db.ts';
-import { FileBackend, MemoryBackend } from '../server/storage.ts';
+import { BlobsBackend, FileBackend, MemoryBackend, type BlobStoreLike } from '../server/storage.ts';
 
 describe('Store', () => {
   it('re-applies a change when another server saved first (no lost updates)', async () => {
@@ -57,5 +57,18 @@ describe('Store', () => {
     await reopened.refresh();
     expect(reopened.data.habits.habits).toHaveLength(1);
     expect(reopened.data.coach.messages).toHaveLength(1);
+  });
+
+  it('opens the Netlify store fresh for every operation (access tokens expire)', async () => {
+    let opened = 0;
+    const fake: BlobStoreLike = {
+      getWithMetadata: async () => null,
+      setJSON: async () => ({ modified: true, etag: '"e1"' }),
+    };
+    const s = new Store(new BlobsBackend(() => (opened++, fake)));
+    await s.refresh();
+    await s.update((d) => d.orders.push({ id: '1', customer: 'A', items: [{ design: 'x', quantity: 1 }], dueDate: '2026-11-02', status: 'todo', createdAt: '' }));
+    await s.refresh();
+    expect(opened).toBe(5); // 2 reads + 1 write + 2 reads
   });
 });

@@ -131,7 +131,12 @@ export async function loadEvents(
     jobs.push(
       caldavEvents(q, force).catch((err: unknown) => {
         davClient = null; // force a fresh login next time
-        errors.push(`iCloud: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(
+          /401|invalid credentials|unauthorized/i.test(msg)
+            ? 'iCloud: Apple rejected the sign-in. Check the Apple ID email (ICLOUD_USERNAME) and app-specific password (ICLOUD_APP_PASSWORD).'
+            : `iCloud: ${msg}`,
+        );
         return [];
       }),
     );

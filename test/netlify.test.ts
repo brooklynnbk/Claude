@@ -40,4 +40,18 @@ describe('Netlify function', () => {
     const res = await other(new Request('https://hq.example.netlify.app/api/habits', { headers: auth }));
     expect((await res.json()).habits.map((h: { name: string }) => h.name)).toEqual(['Walk']);
   });
+
+  it('reports a storage failure as an error, not as "signed out"', async () => {
+    config.appPassword = 'stickers';
+    const broken = new MemoryBackend();
+    broken.read = async () => {
+      throw Object.assign(new Error('Netlify Blobs has generated an internal error (Failed to decode token: Token expired)'), { status: 401 });
+    };
+    const h = createNetlifyHandler(() => broken);
+    const login = await h(new Request('https://hq.example.netlify.app/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'stickers' }) }));
+    const cookie = login.headers.get('set-cookie')!.split(';')[0];
+    const res = await h(new Request('https://hq.example.netlify.app/api/habits', { headers: { cookie } }));
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/try again/);
+  });
 });

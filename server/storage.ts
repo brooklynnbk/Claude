@@ -66,10 +66,20 @@ export interface BlobStoreLike {
   setJSON(key: string, value: unknown, opts: { onlyIfMatch: string } | { onlyIfNew: boolean } | Record<string, never>): Promise<{ modified: boolean; etag?: string }>;
 }
 
-/** Netlify Blobs: each part is one JSON blob, written with ETag compare-and-swap. */
+/**
+ * Netlify Blobs: each part is one JSON blob, written with ETag compare-and-swap.
+ *
+ * Takes a factory rather than a store: Netlify hands each function invocation
+ * a short-lived access token, so the store must be opened fresh for every
+ * operation. A store opened at cold start fails later with "Token expired".
+ */
 export class BlobsBackend implements Backend {
   readonly shared = true;
-  constructor(private store: BlobStoreLike) {}
+  constructor(private openStore: () => BlobStoreLike) {}
+
+  private get store(): BlobStoreLike {
+    return this.openStore();
+  }
 
   async read(part: Part) {
     const entry = await this.store.getWithMetadata(part, { type: 'json' });

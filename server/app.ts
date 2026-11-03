@@ -455,6 +455,19 @@ export function createApp({ store, anthropic }: AppDeps) {
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Not found' });
   });
+
+  // Unexpected failures (e.g. storage) become a 500 with a readable message.
+  // Never pass through an error's own status: a storage 401 must not look like
+  // "signed out" to the app.
+  app.use((err: unknown, _req: Request, res: Response, next: (e?: unknown) => void) => {
+    if (res.headersSent) return next(err);
+    const e = err as { status?: number; expose?: boolean; message?: string };
+    if (e?.expose && e.status && e.status >= 400 && e.status < 500 && e.status !== 401) {
+      return void res.status(e.status).json({ error: e.message ?? 'Bad request' }); // e.g. malformed JSON
+    }
+    console.error('request failed', err);
+    res.status(500).json({ error: "Couldn't load or save your data just now. Please try again." });
+  });
   return app;
 }
 
